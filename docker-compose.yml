@@ -1,0 +1,7 @@
+# 仅手工调试用。日常用 ./goenv.sh apply —— 它按 versions.conf 打带版本的 tag，
+# 这里固定用 :dev，不带版本号，避免和真实镜像混在一起。
+services:
+  gocross-build-env:
+    build:
+      context: .
+    image: gocross/build-env:dev

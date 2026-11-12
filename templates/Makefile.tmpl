@@ -1,0 +1,68 @@
+# =============================================================================
+# 变量区：只改这里
+#   build         本地编译：固定 CGO_ENABLED=0，纯静态二进制，不依赖 glibc
+#   docker-build  容器编译：固定 CGO_ENABLED=1，在 Ubuntu18.04(glibc 2.27) 里编
+#   两者产物都落在 ./bin，配置文件由本文件从本地复制，不经过 docker
+# =============================================================================
+ROOT_DIR  = $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+PROJECT   = __PROJECT__
+
+# 主包路径
+PKG       = $(ROOT_DIR)/cmd/$(PROJECT)
+# 二进制文件名
+OUTPUT    = $(PROJECT)
+BIN_DIR   = $(ROOT_DIR)/bin
+BIN       = $(BIN_DIR)/$(OUTPUT)
+# 编译时所在的包目录（拿去复制配置用）
+CMD_DIR   = $(ROOT_DIR)/cmd/$(PROJECT)
+
+# 容器里用的 Go 版本，必须和编译环境镜像里的某个版本完全一致（不写则用镜像默认版本）
+#   看有哪些：/home/zhang/code/docker/gocross/goenv.sh list
+GO_VERSION  ?=
+
+# ---- 以下是通用部分，一般不用改 ---------------------------------------------
+export GIT_INFO   = $(shell git show --oneline -s)
+export BUILD_TIME = $(shell date "+%Y-%m-%d %H:%M:%S")
+
+GOCROSS_DIR ?= /home/zhang/code/docker/gocross
+GOCROSS     ?= $(GOCROSS_DIR)/gocross-build.sh
+LOCAL_GO    ?= go
+
+# main.go 里固定用 gitInfo / buildTime 两个变量接版本信息
+BUILD_FLAGS = -trimpath \
+              -ldflags "-X 'main.gitInfo=$(GIT_INFO)' -X 'main.buildTime=$(BUILD_TIME)'"
+
+# 交付时一起放进 bin 的配置文件（相对 CMD_DIR；不存在的自动跳过）
+DIST_FILES = config.toml
+
+.PHONY: all build docker-build docker-zip zip clean clean-bin clean-pkg push
+
+all: build
+
+# 本地编译：固定 CGO_ENABLED=0，产物纯静态。依赖 cgo 的项目编不过就用 docker-build
+build: clean-bin
+	cd $(ROOT_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+		$(LOCAL_GO) build $(BUILD_FLAGS) -o $(BIN) $(PKG)
+	@$(foreach f,$(DIST_FILES),[ -f $(CMD_DIR)/$(f) ] && cp $(CMD_DIR)/$(f) $(BIN_DIR)/ || true;)
+
+# 容器编译：固定环境 + 一定开 cgo，给依赖 cgo 的项目用
+docker-build: clean-bin
+	GO_VERSION="$(GO_VERSION)" PKG="$(PKG)" OUTPUT="$(OUTPUT)" \
+		$(GOCROSS) -C "$(ROOT_DIR)" -o "$(BIN_DIR)" $(BUILD_EXTRA_ARGS)
+
+docker-zip: docker-build clean-pkg
+	cd $(ROOT_DIR) && zip -r $(PROJECT).zip bin
+
+zip: build
+	cd $(ROOT_DIR) && zip -r $(PROJECT).zip bin
+
+push: docker-build
+	/home/zhang/code/py_deploy/.venv/bin/python /home/zhang/code/py_deploy/main.py $(BIN) /root/mnt/jiebang 191
+
+clean-bin:
+	rm -rf $(BIN_DIR)
+
+clean-pkg:
+	rm -rf $(ROOT_DIR)/$(PROJECT).zip
+
+clean: clean-bin clean-pkg

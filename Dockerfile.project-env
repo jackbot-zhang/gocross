@@ -1,0 +1,36 @@
+# =============================================================================
+# 项目环境镜像（由 gocross-build.sh 自动构建，走缓存几乎不耗时）
+#
+#   不是"编译环境"本身，只是从基础镜像派生的一层：
+#     - 用 GOROOT 选定 Go 版本（/opt/go/go${GO_VERSION}）
+#     - 建一个与宿主机同 uid/gid 的用户，产物落盘属主正确，不是 root
+# -----------------------------------------------------------------------------
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# 被选中的 Go 版本（必须已在基础镜像 /opt/go 下存在）
+ARG GO_VERSION
+ARG GOPROXY=https://goproxy.cn,direct
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+# 用 GOROOT 固定版本，不用 PATH 里的默认版本：让"用哪个 Go"完全由本次构建决定，
+# 不依赖 go 命令的版本自动切换
+ENV GOROOT=/opt/go/go${GO_VERSION}
+ENV PATH=/opt/go/go${GO_VERSION}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV GOPROXY=${GOPROXY}
+ENV GOPATH=/root/go
+
+RUN go version | grep -q "go${GO_VERSION}" \
+    || { echo "!! go${GO_VERSION} not found in base image ${BASE_IMAGE}" >&2; ls /opt/go >&2; exit 1; }
+
+# 容器内用户映射到宿主机用户：构建产物落盘后属主正确
+RUN if [ "${USER_ID}" != "0" ] && ! getent passwd "${USER_ID}" >/dev/null 2>&1; then \
+        groupadd -g "${GROUP_ID}" dev 2>/dev/null || true; \
+        useradd -u "${USER_ID}" -g "${GROUP_ID}" -M -s /bin/bash dev; \
+    fi
+
+# 模块缓存目录预先创建并授权，避免非 root 用户首次编译时权限问题
+RUN mkdir -p /root/go/pkg/mod /root/.cache/go-build && chmod -R 777 /root/go /root/.cache
+
+WORKDIR /app

@@ -1,0 +1,57 @@
+# =============================================================================
+# 通用项目编译文件（所有 Go 项目共用，项目里不放任何 Dockerfile）
+#
+# 由 gocross-build.sh 调用；BASE_IMAGE 是脚本派生出的项目环境镜像：
+#   Ubuntu 18.04 (glibc 2.27) + 工具链 + 常用 C 库 + 已选定的 Go 版本
+#   （GOROOT 已指向该版本，容器用户已映射成宿主机用户）。
+#
+# 所以这里只做：拷源码 -> 编译 -> 产物放 /app/bin。
+# 配置文件不在这里处理，需要交付时由项目 Makefile 从本地复制。
+# 约定：项目 main 包里用 gitInfo / buildTime 两个变量接收版本信息。
+#
+# 手动调试（一般不需要，正常走 make docker-build）：
+#   docker build -f Dockerfile.gocross \
+#     --build-arg BASE_IMAGE=<project>-buildenv:go<版本>-<hash> \
+#     --build-arg PKG=./cmd/xxx --build-arg OUTPUT=xxx -t test-build .
+# =============================================================================
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# 主包路径 / 产物文件名（由 gocross-build.sh 传入，它会先用默认值兜底）
+ARG PKG=.
+ARG OUTPUT=app
+
+# 只用来校验：镜像里实际生效的必须是这个版本（以 BASE_IMAGE 的 GOROOT 为准）
+ARG GO_VERSION
+ARG GIT_INFO
+ARG BUILD_TIME
+
+# 转成 ENV：让 shell 而不是 docker 展开，避免提交信息里的空格/单引号破坏 ldflags
+ENV GIT_INFO=${GIT_INFO}
+ENV BUILD_TIME=${BUILD_TIME}
+
+WORKDIR /app
+
+# 依赖先下载，利用层缓存（go.mod 不变时不重复下载）
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+
+# 编译（走 docker 的项目一律开 cgo）
+# 注意：Docker 的 RUN 用 /bin/sh(dash)，-ldflags 外层用双引号、-X 的值用单引号，
+# 这样 git 提交信息里的空格不会把参数拆开。
+RUN set -e; \
+    go version | grep -q "go${GO_VERSION}" \
+        || { echo "!! need go${GO_VERSION}, got: $(go version)"; exit 1; }; \
+    mkdir -p bin; \
+    CGO_ENABLED=1 go build -trimpath \
+        -ldflags "-X 'main.gitInfo=${GIT_INFO}' -X 'main.buildTime=${BUILD_TIME}'" \
+        -o "bin/${OUTPUT}" "${PKG}"; \
+    echo "--- build info ---"; \
+    echo "go_version=$(go version)"; \
+    echo "glibc=$(ldd --version | head -1)"; \
+    echo "cgo=1"; \
+    echo "pkg=${PKG}"; \
+    echo "git=${GIT_INFO}"; \
+    echo "build_time=${BUILD_TIME}"
